@@ -1,6 +1,10 @@
 import streamlit as st
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_community.vectorstores import FAISS
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.docstore.document import Document
+import pandas as pd
 import os
 
 # Set page config
@@ -20,96 +24,101 @@ YOUR PERSONALITY:
 - Solution-oriented and consultative
 - Use emojis occasionally to be friendly (🎯, 📚, ✅, 💼, 🎓, etc.)
 
-YOUR EXPERTISE:
-Edstellar offers comprehensive corporate training programs across multiple domains:
-
-🎯 Leadership & Management Training
-- Executive Leadership Programs
-- Emerging Leaders Development
-- Strategic Management
-- Change Management
-- Team Building & Collaboration
-
-💻 Technology & IT Training
-- Programming (Python, Java, JavaScript, etc.)
-- Cloud Computing (AWS, Azure, GCP)
-- DevOps & Agile
-- Cybersecurity
-- Data Engineering
-
-📊 Data & Analytics Training
-- Data Science & Machine Learning
-- Business Analytics
-- Power BI & Tableau
-- SQL & Database Management
-- Big Data Technologies
-
-🤝 Soft Skills & Communication
-- Effective Communication
-- Presentation Skills
-- Emotional Intelligence
-- Conflict Resolution
-- Time Management
-
-📈 Sales & Marketing Training
-- Sales Techniques & Negotiation
-- Digital Marketing
-- Customer Relationship Management
-- Account Management
-- Marketing Strategy
-
-💼 HR & Talent Development
-- Talent Acquisition
-- Performance Management
-- Employee Engagement
-- HR Analytics
-- Organizational Development
-
-🔧 Project Management
-- PMP Certification Prep
-- Agile & Scrum
-- Project Planning & Execution
-- Risk Management
-- Stakeholder Management
-
-TRAINING FORMATS:
-- Virtual Instructor-Led Training (VILT)
-- On-site/In-person Training
-- Hybrid Learning Programs
-- Self-paced Online Courses
-- Customized Corporate Programs
-
-YOUR APPROACH:
-1. Greet users warmly and introduce yourself
-2. Ask questions to understand their needs:
-   - What area/topic are they interested in?
-   - Is it for themselves or their team?
-   - What specific challenges are they facing?
-   - What's their experience level?
-3. Provide relevant, detailed information about programs
-4. Make personalized recommendations based on their needs
-5. Offer next steps (detailed curriculum, consultation, quote, etc.)
-6. Always be helpful even if you don't have specific information
+IMPORTANT INSTRUCTIONS:
+- Use the CONTEXT provided below to answer questions accurately
+- When mentioning specific courses, ALWAYS include the course page link
+- Cite your sources by referencing course names and providing links
+- If the answer is in the context, use that information
+- If you're not sure, acknowledge it and offer to connect them with the Edstellar team
+- Always provide detailed, helpful responses based on the context
+- End responses with engaging questions or calls-to-action
 
 CONVERSATION GUIDELINES:
 - Keep responses conversational but informative
 - Break down information into digestible sections
 - Use bullet points and formatting for clarity
 - Ask follow-up questions to better understand needs
-- If you don't have specific information, acknowledge it honestly and offer to connect them with the Edstellar team
 - Always provide value in every response
-- End responses with a question or call-to-action when appropriate
-
-IMPORTANT REMINDERS:
-- You represent Edstellar's brand - always be professional
-- Focus on understanding user needs before recommending
-- Be enthusiastic about learning and development
 - Emphasize customization options and flexibility
 - Highlight ROI and business impact when relevant
 
-Remember: Your goal is to help users find the perfect training solution and create a positive, helpful experience that reflects Edstellar's commitment to excellence in corporate learning."""
+Remember: Your goal is to help users find the perfect training solution using the accurate information from Edstellar's course catalog."""
 
-# Initialize the LLM with system prompt
+# Load and process course data
+@st.cache_resource
+def load_course_data():
+    """Load course data from CSV and create vector store"""
+    try:
+        # Load courses
+        courses_df = pd.read_csv('edstellar_courses.csv')
+        general_df = pd.read_csv('edstellar_general_info.csv')
+        
+        documents = []
+        
+        # Process courses
+        for _, row in courses_df.iterrows():
+            # Create comprehensive text for each course
+            course_text = f"""
+Course Name: {row['course_name']}
+Category: {row['category']}
+Duration: {row['duration']} ({row['duration_hours']} hours)
+Format: {row['format']}
+Target Audience: {row['target_audience']}
+Group Size: {row['group_size']}
+Prerequisites: {row['prerequisites']}
+
+Description: {row['description']}
+
+Key Topics: {row['key_topics']}
+
+Learning Outcomes: {row['learning_outcomes']}
+
+Price Range: {row['price_range']}
+
+Customization: {row['customization']}
+
+Course Page: {row['course_page']}
+Additional Resources: {row['additional_links']}
+"""
+            
+            documents.append(Document(
+                page_content=course_text,
+                metadata={
+                    'course_name': row['course_name'],
+                    'category': row['category'],
+                    'course_page': row['course_page'],
+                    'type': 'course'
+                }
+            ))
+        
+        # Process general information
+        for _, row in general_df.iterrows():
+            if pd.notna(row['description']) and row['description']:
+                info_text = f"""
+{row['title']}: {row['description']}
+URL: {row['url']}
+Type: {row['info_type']}
+"""
+                documents.append(Document(
+                    page_content=info_text,
+                    metadata={
+                        'title': row['title'],
+                        'url': row['url'],
+                        'type': row['info_type']
+                    }
+                ))
+        
+        # Create embeddings and vector store
+        embeddings = OpenAIEmbeddings(api_key=os.getenv("OPENAI_API_KEY"))
+        vectorstore = FAISS.from_documents(documents, embeddings)
+        
+        return vectorstore, courses_df, general_df
+        
+    except Exception as e:
+        st.error(f"Error loading course data: {str(e)}")
+        return None, None, None
+
+# Initialize the LLM
 @st.cache_resource
 def get_llm():
     api_key = os.getenv("OPENAI_API_KEY")
@@ -118,15 +127,15 @@ def get_llm():
         st.stop()
     return ChatOpenAI(temperature=0.7, model="gpt-3.5-turbo", api_key=api_key)
 
-# Initialize session state for chat history
+# Initialize session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
-    # Add initial greeting from EdBot
+    # Add initial greeting
     initial_greeting = """Hello! 👋 I'm **EdBot**, your Edstellar training consultant!
 
-I'm here to help you discover the perfect corporate training programs for you or your team. Whether you're looking to develop leadership skills, master new technologies, or enhance your team's capabilities, I've got you covered!
+I'm here to help you discover the perfect corporate training programs for you or your team. I have detailed knowledge about all our training courses, including content, pricing, and customization options.
 
-**Popular training areas I can help with:**
+**Popular training areas:**
 🎯 Leadership & Management  
 💻 Technology & IT  
 📊 Data & Analytics  
@@ -139,9 +148,17 @@ I'm here to help you discover the perfect corporate training programs for you or
     
     st.session_state.messages.append({"role": "assistant", "content": initial_greeting})
 
-# App title and description
+# App title
 st.title("🎓 EdBot")
-st.caption("Your Edstellar Training Consultant | Powered by AI")
+st.caption("Your Edstellar Training Consultant | Powered by AI & RAG")
+
+# Load course data
+with st.spinner("Loading Edstellar course catalog..."):
+    vectorstore, courses_df, general_df = load_course_data()
+
+if vectorstore is None:
+    st.error("Failed to load course data. Please check CSV files are present.")
+    st.stop()
 
 # Display chat history
 for message in st.session_state.messages:
@@ -150,67 +167,85 @@ for message in st.session_state.messages:
 
 # Chat input
 if prompt := st.chat_input("Type your message here..."):
-    # Add user message to chat history
+    # Add user message
     st.session_state.messages.append({"role": "user", "content": prompt})
     
-    # Display user message
     with st.chat_message("user"):
         st.markdown(prompt)
     
     # Get bot response
     with st.chat_message("assistant"):
-        with st.spinner("EdBot is thinking..."):
+        with st.spinner("EdBot is searching the course catalog..."):
             llm = get_llm()
             
-            # Convert chat history to LangChain format with system prompt
-            langchain_messages = [SystemMessage(content=EDBOT_SYSTEM_PROMPT)]
+            # Retrieve relevant context from vector store
+            relevant_docs = vectorstore.similarity_search(prompt, k=3)
             
-            for msg in st.session_state.messages[:-1]:  # Exclude the last user message
+            # Build context from retrieved documents
+            context = "\n\n---\n\n".join([doc.page_content for doc in relevant_docs])
+            
+            # Create enhanced system prompt with context
+            enhanced_prompt = f"""{EDBOT_SYSTEM_PROMPT}
+
+CONTEXT FROM EDSTELLAR COURSE CATALOG:
+{context}
+
+Use the above context to answer the user's question accurately. Always include relevant course links when discussing specific programs."""
+            
+            # Build message history
+            langchain_messages = [SystemMessage(content=enhanced_prompt)]
+            
+            for msg in st.session_state.messages[:-1]:
                 if msg["role"] == "user":
                     langchain_messages.append(HumanMessage(content=msg["content"]))
                 elif msg["role"] == "assistant":
                     langchain_messages.append(AIMessage(content=msg["content"]))
             
-            # Add the current user message
             langchain_messages.append(HumanMessage(content=prompt))
             
             # Get response
             response = llm.invoke(langchain_messages)
             st.markdown(response.content)
             
-            # Add assistant response to chat history
+            # Add to chat history
             st.session_state.messages.append({"role": "assistant", "content": response.content})
 
-# Sidebar with information
+# Sidebar
 with st.sidebar:
     st.header("About EdBot 🎓")
     st.markdown("""
-    **EdBot** is your AI-powered training consultant, here to help you:
+    **EdBot** uses RAG (Retrieval Augmented Generation) to provide accurate information about:
     
-    ✅ Discover relevant training programs  
-    ✅ Get personalized recommendations  
-    ✅ Learn about course details  
-    ✅ Understand training formats  
-    ✅ Find solutions for your team's needs  
+    ✅ Course details & curriculum  
+    ✅ Pricing & customization  
+    ✅ Target audience & prerequisites  
+    ✅ Training formats & schedules  
+    ✅ Learning outcomes & benefits  
     
     ---
+    """)
     
+    # Show loaded courses count
+    if courses_df is not None:
+        st.metric("Courses Loaded", len(courses_df))
+    
+    st.markdown("---")
+    
+    st.markdown("""
     **Need human assistance?**  
-    Contact Edstellar:  
-    📧 Email: info@edstellar.com  
-    🌐 Website: www.edstellar.com  
+    📧 training@edstellar.com  
+    🌐 [www.edstellar.com](https://www.edstellar.com)  
     
     ---
     """)
     
     if st.button("🔄 Start New Conversation"):
         st.session_state.messages = []
-        # Re-add initial greeting
         initial_greeting = """Hello! 👋 I'm **EdBot**, your Edstellar training consultant!
 
-I'm here to help you discover the perfect corporate training programs for you or your team. Whether you're looking to develop leadership skills, master new technologies, or enhance your team's capabilities, I've got you covered!
+I'm here to help you discover the perfect corporate training programs for you or your team. I have detailed knowledge about all our training courses, including content, pricing, and customization options.
 
-**Popular training areas I can help with:**
+**Popular training areas:**
 🎯 Leadership & Management  
 💻 Technology & IT  
 📊 Data & Analytics  
@@ -225,4 +260,9 @@ I'm here to help you discover the perfect corporate training programs for you or
         st.rerun()
     
     st.markdown("---")
-    st.caption("Powered by LangChain & OpenAI")
+    st.caption("Powered by LangChain, OpenAI & FAISS")
+    
+    # Debug info (optional - can be removed)
+    with st.expander("🔧 Debug Info"):
+        st.write(f"Vector store created: {'✅' if vectorstore else '❌'}")
+        st.write(f"Total documents: {len(vectorstore.docstore._dict) if vectorstore else 0}")
