@@ -25,7 +25,7 @@ YOUR PERSONALITY:
 
 IMPORTANT INSTRUCTIONS:
 - Use the CONTEXT provided below to answer questions accurately
-- When mentioning specific courses, ALWAYS include the course page link
+- When mentioning specific courses, ALWAYS include the course page link in markdown format
 - Cite your sources by referencing course names and providing links
 - If the answer is in the context, use that information
 - If you're not sure, acknowledge it and offer to connect them with the Edstellar team
@@ -46,7 +46,7 @@ Remember: Your goal is to help users find the perfect training solution using th
 # Load and process course data
 @st.cache_resource
 def load_course_data():
-    """Load course data from CSV and create vector store"""
+    """Load course data from CSV and create FAISS vector store"""
     try:
         # Load courses
         courses_df = pd.read_csv('edstellar_courses.csv')
@@ -107,14 +107,23 @@ Type: {row['info_type']}
                     }
                 ))
         
-        # Create embeddings and vector store
-        embeddings = OpenAIEmbeddings(api_key=os.getenv("OPENAI_API_KEY"))
+        # Create embeddings
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            st.error("OpenAI API key not found.")
+            return None, None, None
+            
+        embeddings = OpenAIEmbeddings(openai_api_key=api_key)
+        
+        # Create FAISS vector store
         vectorstore = FAISS.from_documents(documents, embeddings)
         
         return vectorstore, courses_df, general_df
         
     except Exception as e:
         st.error(f"Error loading course data: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
         return None, None, None
 
 # Initialize the LLM
@@ -124,7 +133,7 @@ def get_llm():
     if not api_key:
         st.error("OpenAI API key not found. Please set it in Streamlit Cloud secrets.")
         st.stop()
-    return ChatOpenAI(temperature=0.7, model="gpt-3.5-turbo", api_key=api_key)
+    return ChatOpenAI(temperature=0.7, model="gpt-3.5-turbo", openai_api_key=api_key)
 
 # Initialize session state
 if "messages" not in st.session_state:
@@ -152,11 +161,11 @@ st.title("🎓 EdBot")
 st.caption("Your Edstellar Training Consultant | Powered by AI & RAG")
 
 # Load course data
-with st.spinner("Loading Edstellar course catalog..."):
+with st.spinner("Loading Edstellar course catalog with FAISS..."):
     vectorstore, courses_df, general_df = load_course_data()
 
 if vectorstore is None:
-    st.error("Failed to load course data. Please check CSV files are present.")
+    st.error("Failed to load course data. Please check CSV files are present and API key is set.")
     st.stop()
 
 # Display chat history
@@ -189,7 +198,7 @@ if prompt := st.chat_input("Type your message here..."):
 CONTEXT FROM EDSTELLAR COURSE CATALOG:
 {context}
 
-Use the above context to answer the user's question accurately. Always include relevant course links when discussing specific programs."""
+Use the above context to answer the user's question accurately. Always include relevant course links in markdown format [Course Name](URL) when discussing specific programs."""
             
             # Build message history
             langchain_messages = [SystemMessage(content=enhanced_prompt)]
@@ -213,7 +222,7 @@ Use the above context to answer the user's question accurately. Always include r
 with st.sidebar:
     st.header("About EdBot 🎓")
     st.markdown("""
-    **EdBot** uses RAG (Retrieval Augmented Generation) to provide accurate information about:
+    **EdBot** uses RAG (Retrieval Augmented Generation) with **FAISS vector database** to provide accurate information about:
     
     ✅ Course details & curriculum  
     ✅ Pricing & customization  
@@ -226,7 +235,9 @@ with st.sidebar:
     
     # Show loaded courses count
     if courses_df is not None:
-        st.metric("Courses Loaded", len(courses_df))
+        st.metric("📚 Courses in Database", len(courses_df))
+        if general_df is not None:
+            st.metric("🗂️ Total Documents", len(courses_df) + len(general_df))
     
     st.markdown("---")
     
@@ -261,7 +272,9 @@ I'm here to help you discover the perfect corporate training programs for you or
     st.markdown("---")
     st.caption("Powered by LangChain, OpenAI & FAISS")
     
-    # Debug info (optional - can be removed)
+    # Debug info
     with st.expander("🔧 Debug Info"):
         st.write(f"Vector store created: {'✅' if vectorstore else '❌'}")
-        st.write(f"Total documents: {len(vectorstore.docstore._dict) if vectorstore else 0}")
+        if vectorstore:
+            st.write(f"Vector DB Type: FAISS")
+            st.write(f"Total vectors: {vectorstore.index.ntotal if hasattr(vectorstore, 'index') else 'N/A'}")
